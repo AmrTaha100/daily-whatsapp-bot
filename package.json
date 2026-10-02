@@ -11,6 +11,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "node-cron": "^4.2.1"
+    "node-cron": "4.2.1"
   }
 }
