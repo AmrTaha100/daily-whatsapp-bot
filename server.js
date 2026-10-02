@@ -1,7 +1,7 @@
 const fs = require("fs");
 const cron = require("node-cron");
 
-const EVOLUTION_URL = (process.env.EVOLUTION_URL || "").replace(/\\/$/, "");
+const EVOLUTION_URL = (process.env.EVOLUTION_URL || "").replace(/\/$/, "");
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY;
 const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE || "daily-bot";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID;
@@ -55,7 +55,7 @@ async function sendQuote() {
   const index = state.nextIndex % quotes.length;
   const quote = quotes[index];
 
-  const text = `💡 حكمة اليوم\\n\\n${quote}`;
+  const text = `💡 حكمة اليوم\n\n${quote}`;
 
   const response = await fetch(
     `${EVOLUTION_URL}/message/sendText/${encodeURIComponent(EVOLUTION_INSTANCE)}`,
