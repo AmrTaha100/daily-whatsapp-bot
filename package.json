@@ -1,0 +1,16 @@
+{
+  "name": "daily-whatsapp-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scheduled WhatsApp quote sender using Evolution API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "node-cron": "^4.2.1"
+  }
+}
