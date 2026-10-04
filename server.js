@@ -478,9 +478,9 @@ function loadReminders() {
         reminder &&
         typeof reminder.id === "string" &&
         typeof reminder.date === "string" &&
-        /^\\d{4}-\\d{2}-\\d{2}$/.test(reminder.date) &&
+        /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(reminder.date) &&
         typeof reminder.time === "string" &&
-        /^\\d{2}:\\d{2}$/.test(reminder.time) &&
+        /^[0-9]{2}:[0-9]{2}$/.test(reminder.time) &&
         typeof reminder.text === "string" &&
         reminder.text.trim().length > 0 &&
         typeof reminder.senderName === "string"
@@ -567,7 +567,7 @@ function extractWebhookMessage(payload) {
 function isMessagesUpsert(payload) {
   const event = String(payload?.event || payload?.type || "")
     .toUpperCase()
-    .replace(/[.\\s-]+/g, "_");
+    .replace(/[.\s-]+/g, "_");
 
   return event === "MESSAGES_UPSERT";
 }
@@ -596,7 +596,7 @@ function parseReminderCommand(commandText, now) {
   }
 
   const timeMatch = details.match(
-    /(?:الساعة|ساعه)\s*(\\d{1,2})(?::(\\d{2}))?\s*(صباحًا|صباحا|مساءً|مساءا|ص|م)?/i
+    /(?:الساعة|ساعه)\s*([0-9]{1,2})(?::([0-9]{2}))?\s*(صباحًا|صباحا|مساءً|مساءا|ص|م)?/i
   );
 
   if (!timeMatch) {
