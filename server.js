@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const http = require("http");
 const cron = require("node-cron");
 
 const EVOLUTION_URL = (process.env.EVOLUTION_URL || "").replace(/\/$/, "");
@@ -13,6 +14,9 @@ const WEATHER_SCHEDULE = process.env.WEATHER_SCHEDULE || "0 0 * * *";
 const FACT_SCHEDULE = process.env.FACT_SCHEDULE || "0 8 * * *";
 const TIMEZONE = process.env.TIMEZONE || "Africa/Cairo";
 const STATE_FILE = process.env.STATE_FILE || "/data/state.json";
+const REMINDERS_FILE = process.env.REMINDERS_FILE || "/data/reminders.json";
+const WEBHOOK_PATH = process.env.WEBHOOK_PATH || "/webhook";
+const PORT = Number(process.env.PORT) || 8080;
 
 const WEATHER_LOCATION = "قرية شنشا";
 const WEATHER_LATITUDE = 30.882654;
@@ -460,9 +464,394 @@ async function runTask(label, task) {
   }
 }
 
+
+function loadReminders() {
+  try {
+    const reminders = JSON.parse(fs.readFileSync(REMINDERS_FILE, "utf8"));
+
+    if (!Array.isArray(reminders)) {
+      throw new Error("Reminders file must contain an array.");
+    }
+
+    return reminders.filter((reminder) => {
+      return (
+        reminder &&
+        typeof reminder.id === "string" &&
+        typeof reminder.date === "string" &&
+        /^\\d{4}-\\d{2}-\\d{2}$/.test(reminder.date) &&
+        typeof reminder.time === "string" &&
+        /^\\d{2}:\\d{2}$/.test(reminder.time) &&
+        typeof reminder.text === "string" &&
+        reminder.text.trim().length > 0 &&
+        typeof reminder.senderName === "string"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function saveReminders(reminders) {
+  const dir = path.dirname(REMINDERS_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const tempFile = REMINDERS_FILE + ".tmp";
+  fs.writeFileSync(tempFile, JSON.stringify(reminders, null, 2), "utf8");
+  fs.renameSync(tempFile, REMINDERS_FILE);
+}
+
+function normalizeArabicDigits(value) {
+  return value
+    .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)));
+}
+
+function getNowParts(timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(new Date())
+      .filter(({ type }) => type !== "literal")
+      .map(({ type, value }) => [type, value])
+  );
+
+  return {
+    date: parts.year + "-" + parts.month + "-" + parts.day,
+    hour: Number(parts.hour),
+    minute: Number(parts.minute)
+  };
+}
+
+function addDaysToDateKey(dateKey, days) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+
+  return [
+    String(date.getUTCFullYear()).padStart(4, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0")
+  ].join("-");
+}
+
+function extractWebhookMessage(payload) {
+  const data = payload?.data || {};
+  const messageData = Array.isArray(data.messages) ? data.messages[0] || {} : data;
+  const key = messageData.key || data.key || {};
+
+  const message = messageData.message || data.message || {};
+  const text =
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    messageData.text?.body ||
+    data.text?.body ||
+    messageData.body ||
+    data.body ||
+    "";
+
+  return {
+    text: typeof text === "string" ? text : "",
+    key,
+    pushName: messageData.pushName || data.pushName || payload.pushName || ""
+  };
+}
+
+function isMessagesUpsert(payload) {
+  const event = String(payload?.event || payload?.type || "")
+    .toUpperCase()
+    .replace(/[.\\s-]+/g, "_");
+
+  return event === "MESSAGES_UPSERT";
+}
+
+function parseReminderCommand(commandText, now) {
+  const normalized = normalizeArabicDigits(commandText.trim());
+  const prefix = "/فكرني";
+
+  if (!normalized.startsWith(prefix)) {
+    return null;
+  }
+
+  let details = normalized.slice(prefix.length).trim();
+
+  if (!details) {
+    return { error: "اكتب التذكير والوقت، مثال: /فكرني الساعة 5 أروح المشوار" };
+  }
+
+  let dayOffset = 0;
+  const hasDayKeyword = /بعد\s+(بكرة|بُكرة|غد|غدا|غداً)|بكرة|بُكرة|غدا|غداً/.test(details);
+
+  if (/بعد\s+(بكرة|بُكرة|غد|غدا|غداً)/.test(details)) {
+    dayOffset = 2;
+  } else if (/بكرة|بُكرة|غدا|غداً/.test(details)) {
+    dayOffset = 1;
+  }
+
+  const timeMatch = details.match(
+    /(?:الساعة|ساعه)\s*(\\d{1,2})(?::(\\d{2}))?\s*(صباحًا|صباحا|مساءً|مساءا|ص|م)?/i
+  );
+
+  if (!timeMatch) {
+    return {
+      error:
+        "مش لاقي الوقت 😅\nاستخدم مثلًا: /فكرني الساعة 5 أروح المشوار\nأو: /فكرني بكرة الساعة 8 أذاكر"
+    };
+  }
+
+  let hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2] || 0);
+  const meridiem = timeMatch[3] || "";
+
+  if (hour > 23 || minute > 59) {
+    return { error: "الوقت ده مش صحيح 😅" };
+  }
+
+  if (meridiem) {
+    const isPm = /م|مساء/.test(meridiem);
+    const isAm = /ص|صباح/.test(meridiem);
+
+    if (hour > 12 || (!isPm && !isAm)) {
+      return { error: "اكتب الساعة بين 1 و12 مع ص/م، أو استخدم 24 ساعة مثل 17:00." };
+    }
+
+    if (isPm && hour < 12) hour += 12;
+    if (isAm && hour === 12) hour = 0;
+  } else if (hour >= 1 && hour <= 12) {
+    if (dayOffset === 0) {
+      const candidates = [hour, hour === 12 ? 0 : hour + 12]
+        .filter((value) => value >= 0 && value <= 23)
+        .sort((a, b) => {
+          const aMinutes = a * 60 + minute;
+          const bMinutes = b * 60 + minute;
+          const nowMinutes = now.hour * 60 + now.minute;
+
+          const aDelta = aMinutes >= nowMinutes ? aMinutes - nowMinutes : Infinity;
+          const bDelta = bMinutes >= nowMinutes ? bMinutes - nowMinutes : Infinity;
+
+          return aDelta - bDelta;
+        });
+
+      hour = candidates[0];
+    } else if (hour >= 1 && hour <= 12) {
+      hour = hour === 12 ? 12 : hour;
+    }
+  }
+
+  const targetDate = addDaysToDateKey(now.date, dayOffset);
+
+  if (
+    dayOffset === 0 &&
+    (hour < now.hour || (hour === now.hour && minute <= now.minute))
+  ) {
+    return {
+      error:
+        "الساعة دي عدّت النهارده 😅\nقول مثلًا: /فكرني بكرة الساعة " +
+        timeMatch[1] +
+        " " +
+        details.replace(timeMatch[0], "").trim()
+    };
+  }
+
+  const reminderText = details
+    .replace(/بعد\s+(بكرة|بُكرة|غد|غدا|غداً)|بكرة|بُكرة|غدا|غداً/gi, "")
+    .replace(timeMatch[0], "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!reminderText) {
+    return {
+      error: "قولّي هفكرك بإيه 😅\nمثال: /فكرني الساعة 5 أروح المشوار"
+    };
+  }
+
+  return {
+    date: targetDate,
+    time:
+      String(hour).padStart(2, "0") +
+      ":" +
+      String(minute).padStart(2, "0"),
+    text: reminderText,
+    hasDayKeyword
+  };
+}
+
+async function handleIncomingWebhook(payload) {
+  if (!isMessagesUpsert(payload)) return;
+
+  const instance = payload?.instance || payload?.instanceName;
+  if (instance && instance !== EVOLUTION_INSTANCE) return;
+
+  const { text, key, pushName } = extractWebhookMessage(payload);
+
+  if (key.fromMe === true) return;
+  if (key.remoteJid !== WHATSAPP_GROUP_ID) return;
+
+  const commandText = text.trim();
+  if (!commandText.startsWith("/فكرني")) return;
+
+  const now = getNowParts(TIMEZONE);
+  const parsed = parseReminderCommand(commandText, now);
+
+  if (!parsed || parsed.error) {
+    await sendText("🤖 " + parsed.error);
+    return;
+  }
+
+  const reminders = loadReminders();
+  const sourceMessageId = typeof key.id === "string" ? key.id : null;
+
+  if (sourceMessageId && reminders.some((reminder) => reminder.sourceMessageId === sourceMessageId)) {
+    return;
+  }
+
+  const reminder = {
+    id: crypto.randomUUID(),
+    sourceMessageId,
+    senderName: String(pushName || "أحد أفراد العيلة").trim(),
+    senderId: String(key.participant || key.remoteJid || ""),
+    date: parsed.date,
+    time: parsed.time,
+    text: parsed.text,
+    createdAt: new Date().toISOString()
+  };
+
+  reminders.push(reminder);
+  saveReminders(reminders);
+
+  await sendText(
+    "✅ تمام يا " +
+      reminder.senderName +
+      "، هفكرك يوم " +
+      reminder.date +
+      " الساعة " +
+      reminder.time +
+      "."
+  );
+
+  console.log(
+    "[" +
+      new Date().toISOString() +
+      "] Reminder created for " +
+      reminder.senderName +
+      " at " +
+      reminder.date +
+      " " +
+      reminder.time +
+      "."
+  );
+}
+
+async function sendDueReminders() {
+  const now = getNowParts(TIMEZONE);
+  const reminders = loadReminders();
+
+  const due = reminders.filter(
+    (reminder) =>
+      !reminder.sentAt &&
+      reminder.date === now.date &&
+      reminder.time ===
+        String(now.hour).padStart(2, "0") +
+          ":" +
+          String(now.minute).padStart(2, "0")
+  );
+
+  if (due.length === 0) return;
+
+  for (const reminder of due) {
+    try {
+      await sendText(
+        "🔔 تذكير لـ " +
+          reminder.senderName +
+          "\n\n" +
+          reminder.text
+      );
+      reminder.sentAt = new Date().toISOString();
+      console.log(
+        "[" +
+          new Date().toISOString() +
+          "] Reminder sent to " +
+          reminder.senderName +
+          ": " +
+          reminder.date +
+          " " +
+          reminder.time
+      );
+    } catch (error) {
+      console.error("Reminder send failed:", error);
+    }
+  }
+
+  saveReminders(reminders);
+}
+
+async function handleHttpRequest(req, res) {
+  if (req.method === "GET" && req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
+  const requestUrl = new URL(req.url, "http://localhost");
+
+  if (requestUrl.pathname !== WEBHOOK_PATH || req.method !== "POST") {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not Found");
+    return;
+  }
+
+  let body = "";
+
+  req.setEncoding("utf8");
+  req.on("data", (chunk) => {
+    body += chunk;
+
+    if (body.length > 1_000_000) {
+      req.destroy();
+    }
+  });
+
+  req.on("end", async () => {
+    try {
+      const payload = JSON.parse(body);
+      await handleIncomingWebhook(payload);
+
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (error) {
+      console.error("Webhook handling failed:", error);
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false }));
+    }
+  });
+
+  req.on("error", (error) => {
+    console.error("Webhook request error:", error);
+  });
+}
+
+const httpServer = http.createServer(handleHttpRequest);
+
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log("HTTP server listening on port " + PORT);
+});
+
 cron.schedule(
   WEATHER_SCHEDULE,
   () => runTask("Weather", sendWeather),
+  { timezone: TIMEZONE }
+);
+
+cron.schedule(
+  "* * * * *",
+  () => runTask("Reminders", sendDueReminders),
   { timezone: TIMEZONE }
 );
 
@@ -484,6 +873,8 @@ console.log("Group: " + WHATSAPP_GROUP_ID);
 console.log("Weather schedule: " + WEATHER_SCHEDULE);
 console.log("Fact schedule: " + FACT_SCHEDULE);
 console.log("Quote schedule: " + SCHEDULE);
+console.log("Reminder webhook: " + WEBHOOK_PATH);
+console.log("Reminder check: every minute");
 console.log("Timezone: " + TIMEZONE);
 console.log(
   "Weather locations: " +
