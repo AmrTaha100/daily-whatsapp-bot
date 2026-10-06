@@ -504,7 +504,7 @@ async function askGemini(question) {
 }
 
 async function handleAskCommand(commandText) {
-  const match = commandText.match(/^\\/(?:اسأل|اسال)(?:\\s+([\\s\\S]+))?$/);
+  const match = commandText.match(/^\/(?:اسأل|اسال)(?:\s+([\s\S]+))?$/);
 
   if (!match || !match[1] || !match[1].trim()) {
     return "🤖 اكتب سؤالك بعد الأمر، مثال:\n/اسأل ليه السماء لونها أزرق؟";
