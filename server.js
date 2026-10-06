@@ -3,6 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const http = require("http");
 const cron = require("node-cron");
+const { GoogleGenAI } = require("@google/genai");
 
 const EVOLUTION_URL = (process.env.EVOLUTION_URL || "").replace(/\/$/, "");
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY;
@@ -17,6 +18,8 @@ const STATE_FILE = process.env.STATE_FILE || "/data/state.json";
 const REMINDERS_FILE = process.env.REMINDERS_FILE || "/data/reminders.json";
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || "/webhook";
 const PORT = Number(process.env.PORT) || 8080;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 const WEATHER_LOCATION = "قرية شنشا";
 const WEATHER_LATITUDE = 30.882654;
@@ -465,6 +468,62 @@ async function runTask(label, task) {
 }
 
 
+let geminiClient = null;
+
+function getGeminiClient() {
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  if (!geminiClient) {
+    geminiClient = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  }
+
+  return geminiClient;
+}
+
+async function askGemini(question) {
+  const ai = getGeminiClient();
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: question,
+    config: {
+      systemInstruction:
+        "أنت مساعد ذكي داخل بوت واتساب عائلي مصري. أجب بالعربية الواضحة وبأسلوب ودود ومختصر قدر الإمكان. لا تدّعي معلومات غير مؤكدة، وإذا كان السؤال يحتاج معلومات حديثة فاذكر أن معلوماتك قد تحتاج إلى تحقق خارجي. لا تستخدم تحية طويلة أو مقدمات زائدة.",
+    }
+  });
+
+  const answer = typeof response.text === "string" ? response.text.trim() : "";
+
+  if (!answer) {
+    throw new Error("Gemini returned an empty response.");
+  }
+
+  return answer;
+}
+
+async function handleAskCommand(commandText) {
+  const match = commandText.match(/^\\/(?:اسأل|اسال)(?:\\s+([\\s\\S]+))?$/);
+
+  if (!match || !match[1] || !match[1].trim()) {
+    return "🤖 اكتب سؤالك بعد الأمر، مثال:\n/اسأل ليه السماء لونها أزرق؟";
+  }
+
+  try {
+    const answer = await askGemini(match[1].trim());
+    return "🤖 " + answer;
+  } catch (error) {
+    console.error("Gemini request failed:", error);
+
+    if (error?.message === "GEMINI_API_KEY is not configured.") {
+      return "⚠️ Gemini مش متفعل حاليًا. محتاج إضافة GEMINI_API_KEY في إعدادات البوت.";
+    }
+
+    return "⚠️ حصلت مشكلة وأنا بحاول أسأل Gemini. جرّب تاني بعد شوية.";
+  }
+}
+
 function loadReminders() {
   try {
     const reminders = JSON.parse(fs.readFileSync(REMINDERS_FILE, "utf8"));
@@ -695,6 +754,12 @@ async function handleIncomingWebhook(payload) {
   if (key.remoteJid !== WHATSAPP_GROUP_ID) return;
 
   const commandText = text.trim();
+
+  if (commandText === "/اسأل" || commandText === "/اسال" || commandText.startsWith("/اسأل ") || commandText.startsWith("/اسال ")) {
+    await sendText(await handleAskCommand(commandText));
+    return;
+  }
+
   if (!commandText.startsWith("/فكرني")) return;
 
   const now = getNowParts(TIMEZONE);
@@ -875,6 +940,8 @@ console.log("Fact schedule: " + FACT_SCHEDULE);
 console.log("Quote schedule: " + SCHEDULE);
 console.log("Reminder webhook: " + WEBHOOK_PATH);
 console.log("Reminder check: every minute");
+console.log("Gemini: " + (GEMINI_API_KEY ? "configured" : "not configured"));
+console.log("Gemini model: " + GEMINI_MODEL);
 console.log("Timezone: " + TIMEZONE);
 console.log(
   "Weather locations: " +

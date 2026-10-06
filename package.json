@@ -2,7 +2,7 @@
   "name": "daily-whatsapp-bot",
   "version": "1.0.0",
   "private": true,
-  "description": "Scheduled WhatsApp quote sender using Evolution API",
+  "description": "Scheduled WhatsApp family bot using Evolution API and Gemini",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "node-cron": "4.2.1"
+    "node-cron": "4.2.1",
+    "@google/genai": "2.24.0"
   }
 }
