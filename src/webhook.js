@@ -54,6 +54,48 @@ function isAuthorizedWebhook(req) {
   );
 }
 
+function createMessageDeduplicator({
+  maxEntries = 5000,
+  ttlMs = 15 * 60 * 1000
+} = {}) {
+  const entries = new Map();
+
+  function prune(now) {
+    for (const [id, timestamp] of entries) {
+      if (now - timestamp >= ttlMs) {
+        entries.delete(id);
+      }
+    }
+
+    while (entries.size > maxEntries) {
+      const oldest = entries.keys().next().value;
+      if (oldest === undefined) break;
+      entries.delete(oldest);
+    }
+  }
+
+  return {
+    isDuplicate(messageId) {
+      if (!messageId) return false;
+
+      const now = Date.now();
+      const previous = entries.get(messageId);
+
+      if (previous !== undefined && now - previous < ttlMs) {
+        return true;
+      }
+
+      entries.set(messageId, now);
+      prune(now);
+      return false;
+    },
+
+    forget(messageId) {
+      if (messageId) entries.delete(messageId);
+    }
+  };
+}
+
 function createRateLimiter({ maxRequests, windowMs }) {
   const buckets = new Map();
 
@@ -94,5 +136,6 @@ module.exports = {
   isMessagesUpsert,
   safeEqual,
   isAuthorizedWebhook,
+  createMessageDeduplicator,
   createRateLimiter
 };

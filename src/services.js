@@ -8,6 +8,7 @@ const {
   loadJsonList,
   loadState,
   saveState,
+  updateState,
   chooseRandomItem
 } = require('./core');
 
@@ -306,10 +307,11 @@ async function sendWeather() {
 
   await sendText(text);
 
-  state.lastWeatherDate = shanashaDate;
-  state.totalWeatherSent += 1;
-  state.totalMessagesSent += 1;
-  saveState(config.stateFile, state);
+  await updateState(config.stateFile, quotes, (freshState) => {
+    freshState.lastWeatherDate = shanashaDate;
+    freshState.totalWeatherSent += 1;
+    freshState.totalMessagesSent += 1;
+  });
 
   console.log('[' + new Date().toISOString() + '] Weather sent for ' + shanashaDate + '.');
 }
@@ -326,12 +328,18 @@ async function sendFact() {
 
   await sendText('🧠 معلومة اليوم\n\n' + selected.item);
 
-  state.factSentHashes.push(selected.hash);
-  state.factSentHashes = [...new Set(state.factSentHashes)];
-  state.lastFactDate = today;
-  state.totalFactsSent += 1;
-  state.totalMessagesSent += 1;
-  saveState(config.stateFile, state);
+  await updateState(config.stateFile, quotes, (freshState) => {
+    if (selected.cycleStarted) {
+      freshState.factSentHashes = [];
+      freshState.factCycle = Math.max(freshState.factCycle, state.factCycle);
+    }
+
+    freshState.factSentHashes.push(selected.hash);
+    freshState.factSentHashes = [...new Set(freshState.factSentHashes)];
+    freshState.lastFactDate = today;
+    freshState.totalFactsSent += 1;
+    freshState.totalMessagesSent += 1;
+  });
 }
 
 async function sendQuote() {
@@ -345,12 +353,18 @@ async function sendQuote() {
 
   await sendText('💡 حكمة اليوم\n\n' + selected.item);
 
-  state.sentHashes.push(selected.hash);
-  state.sentHashes = [...new Set(state.sentHashes)];
-  state.lastQuoteDate = today;
-  state.totalQuotesSent += 1;
-  state.totalMessagesSent += 1;
-  saveState(config.stateFile, state);
+  await updateState(config.stateFile, quotes, (freshState) => {
+    if (selected.cycleStarted) {
+      freshState.sentHashes = [];
+      freshState.cycle = Math.max(freshState.cycle, state.cycle);
+    }
+
+    freshState.sentHashes.push(selected.hash);
+    freshState.sentHashes = [...new Set(freshState.sentHashes)];
+    freshState.lastQuoteDate = today;
+    freshState.totalQuotesSent += 1;
+    freshState.totalMessagesSent += 1;
+  });
 }
 
 module.exports = {

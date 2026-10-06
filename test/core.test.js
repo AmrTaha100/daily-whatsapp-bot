@@ -9,10 +9,15 @@ const {
   scheduleKey,
   normalizeArabicDigits,
   loadState,
+  updateState,
   textHash
 } = require('../src/core');
 const { parseReminderCommand } = require('../src/reminders');
-const { safeEqual, createRateLimiter } = require('../src/webhook');
+const {
+  safeEqual,
+  createMessageDeduplicator,
+  createRateLimiter
+} = require('../src/webhook');
 
 test('reminder uses the next 9 o’clock when AM/PM is omitted', () => {
   assert.equal(
@@ -101,4 +106,36 @@ test('rate limiter blocks only after the configured count', () => {
   assert.equal(limiter.allow('a'), true);
   assert.equal(limiter.allow('a'), false);
   assert.equal(limiter.allow('b'), true);
+});
+
+
+test('state updates are serialized without losing increments', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-bot-state-lock-'));
+  const stateFile = path.join(dir, 'state.json');
+  const quotes = ['one', 'two'];
+
+  await Promise.all([
+    updateState(stateFile, quotes, async (state) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      state.totalMessagesSent += 1;
+    }),
+    updateState(stateFile, quotes, async (state) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      state.totalMessagesSent += 1;
+    })
+  ]);
+
+  const finalState = loadState(stateFile, quotes);
+  assert.equal(finalState.totalMessagesSent, 2);
+});
+
+test('webhook deduplicator ignores repeated message IDs', () => {
+  const dedupe = createMessageDeduplicator({ maxEntries: 10, ttlMs: 60_000 });
+
+  assert.equal(dedupe.isDuplicate('msg-1'), false);
+  assert.equal(dedupe.isDuplicate('msg-1'), true);
+  assert.equal(dedupe.isDuplicate('msg-2'), false);
+
+  dedupe.forget('msg-1');
+  assert.equal(dedupe.isDuplicate('msg-1'), false);
 });

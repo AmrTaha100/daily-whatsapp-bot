@@ -2,6 +2,38 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+function createAsyncMutex() {
+  let tail = Promise.resolve();
+
+  return async function runExclusive(task) {
+    const previous = tail;
+    let release;
+
+    tail = new Promise((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+}
+
+const stateMutex = createAsyncMutex();
+const remindersMutex = createAsyncMutex();
+
+function withStateLock(task) {
+  return stateMutex(task);
+}
+
+function withRemindersLock(task) {
+  return remindersMutex(task);
+}
+
 function loadJsonList(filePath, label) {
   const items = JSON.parse(fs.readFileSync(filePath, 'utf8'));
 
@@ -83,6 +115,15 @@ function saveState(stateFile, state) {
   writeJsonAtomic(stateFile, state);
 }
 
+async function updateState(stateFile, quotes, updater) {
+  return withStateLock(async () => {
+    const state = loadState(stateFile, quotes);
+    const result = await updater(state);
+    saveState(stateFile, state);
+    return result;
+  });
+}
+
 function chooseRandomItem(items, state, hashesKey, cycleKey) {
   const sentSet = new Set(state[hashesKey]);
 
@@ -95,10 +136,11 @@ function chooseRandomItem(items, state, hashesKey, cycleKey) {
     state[cycleKey] += 1;
 
     const item = items[Math.floor(Math.random() * items.length)];
-    return { item, hash: textHash(item) };
+    return { item, hash: textHash(item), cycleStarted: true };
   }
 
-  return available[Math.floor(Math.random() * available.length)];
+  const selected = available[Math.floor(Math.random() * available.length)];
+  return { ...selected, cycleStarted: false };
 }
 
 function loadReminders(filePath) {
@@ -217,6 +259,9 @@ module.exports = {
   writeJsonAtomic,
   loadState,
   saveState,
+  updateState,
+  withStateLock,
+  withRemindersLock,
   chooseRandomItem,
   loadReminders,
   saveReminders,

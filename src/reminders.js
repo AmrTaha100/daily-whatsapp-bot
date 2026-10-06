@@ -3,6 +3,8 @@ const { config } = require('./config');
 const {
   loadReminders,
   saveReminders,
+  withRemindersLock,
+  updateState,
   normalizeArabicDigits,
   addDaysToDateKey,
   getNowParts,
@@ -114,14 +116,17 @@ function parseReminderCommand(commandText, now) {
   };
 }
 
-async function createReminder({
-  commandText,
-  pushName,
-  senderId,
-  sourceMessageId,
-  sendText
-}) {
-  const now = getNowParts(config.timezone);
+async function createReminder(args) {
+  return withRemindersLock(async () => {
+    const {
+      commandText,
+      pushName,
+      senderId,
+      sourceMessageId,
+      sendText
+    } = args;
+
+    const now = getNowParts(config.timezone);
   const parsed = parseReminderCommand(commandText, now);
 
   if (!parsed || parsed.error) {
@@ -162,10 +167,12 @@ async function createReminder({
       '.'
   );
 
-  return { created: true, reminder };
+    return { created: true, reminder };
+  });
 }
 
 async function sendDueReminders(sendText) {
+  return withRemindersLock(async () => {
   const now = getNowParts(config.timezone);
   const currentKey = scheduleKey(
     now.date,
@@ -208,10 +215,10 @@ async function sendDueReminders(sendText) {
       const quotes = require('fs').existsSync('./quotes.json')
         ? require('./core').loadJsonList('./quotes.json', 'quote')
         : [];
-      const state = loadState(config.stateFile, quotes);
-      state.totalRemindersSent += 1;
-      state.totalMessagesSent += 1;
-      saveState(config.stateFile, state);
+      await updateState(config.stateFile, quotes, (state) => {
+        state.totalRemindersSent += 1;
+        state.totalMessagesSent += 1;
+      });
     } catch (error) {
       delete reminder.processingAt;
       changed = true;
@@ -219,7 +226,8 @@ async function sendDueReminders(sendText) {
     }
   }
 
-  if (changed) saveReminders(config.remindersFile, reminders);
+    if (changed) saveReminders(config.remindersFile, reminders);
+  });
 }
 
 module.exports = {

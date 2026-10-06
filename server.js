@@ -1,7 +1,7 @@
 const http = require('http');
 const cron = require('node-cron');
 const { config, validateConfig } = require('./src/config');
-const { loadJsonList, loadState, saveState } = require('./src/core');
+const { loadJsonList, loadState, saveState, updateState } = require('./src/core');
 const {
   sendText,
   handleAskCommand,
@@ -14,6 +14,7 @@ const {
   extractWebhookMessage,
   isMessagesUpsert,
   isAuthorizedWebhook,
+  createMessageDeduplicator,
   createRateLimiter
 } = require('./src/webhook');
 
@@ -29,6 +30,7 @@ const path = require('path');
 const quotesPath = path.resolve('./quotes.json');
 const startedAt = new Date().toISOString();
 const inboundLimiter = createRateLimiter({ maxRequests: 30, windowMs: 60_000 });
+const webhookDeduplicator = createMessageDeduplicator();
 const taskLocks = new Set();
 
 function initializeState() {
@@ -67,24 +69,36 @@ async function handleIncomingWebhook(payload) {
     return;
   }
 
-  const commandText = text.trim();
+  const messageId = typeof key.id === 'string' ? key.id : '';
 
-  if (/^\/(?:اسأل|اسال)(?:\s|$)/.test(commandText)) {
-    updateCommandStats('/اسأل', true);
-    const answer = await handleAskCommand(commandText, senderId);
-    await sendText(answer);
+  if (messageId && webhookDeduplicator.isDuplicate(messageId)) {
+    console.warn('Duplicate webhook message ' + messageId + ' ignored.');
     return;
   }
 
-  if (commandText.startsWith('/فكرني')) {
-    updateCommandStats('/فكرني');
-    await createReminder({
-      commandText,
-      pushName,
-      senderId,
-      sourceMessageId: typeof key.id === 'string' ? key.id : null,
-      sendText
-    });
+  try {
+    const commandText = text.trim();
+
+    if (/^\/(?:اسأل|اسال)(?:\s|$)/.test(commandText)) {
+      await updateCommandStats('/اسأل', true);
+      const answer = await handleAskCommand(commandText, senderId);
+      await sendText(answer);
+      return;
+    }
+
+    if (commandText.startsWith('/فكرني')) {
+      await updateCommandStats('/فكرني');
+      await createReminder({
+        commandText,
+        pushName,
+        senderId,
+        sourceMessageId: messageId || null,
+        sendText
+      });
+    }
+  } catch (error) {
+    if (messageId) webhookDeduplicator.forget(messageId);
+    throw error;
   }
 }
 
@@ -103,9 +117,9 @@ async function runTask(label, task) {
 
     try {
       const quotes = loadJsonList(quotesPath, 'quote');
-      const state = loadState(config.stateFile, quotes);
-      state.lastErrorAt = new Date().toISOString();
-      saveState(config.stateFile, state);
+      await updateState(config.stateFile, quotes, (state) => {
+        state.lastErrorAt = new Date().toISOString();
+      });
     } catch (stateError) {
       console.error('Could not persist error state:', stateError.message);
     }
